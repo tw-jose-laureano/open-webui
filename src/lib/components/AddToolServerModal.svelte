@@ -67,6 +67,9 @@
 	let oauthScope = '';
 	let oauthResourceParameter = 'auto';
 
+	let awsRegion = 'us-east-1';
+	let awsService = 'bedrock';
+
 	let enable = true;
 	let loading = false;
 	let showAdvanced = false;
@@ -209,6 +212,7 @@
 				auth_type,
 				headers: headers ? JSON.parse(headers) : undefined,
 				key,
+				...(auth_type === 'aws_iam' ? { aws_region: awsRegion, aws_service: awsService } : {}),
 				config: {
 					enable: enable,
 					access_grants: accessGrants
@@ -383,6 +387,7 @@
 			headers: headers ? JSON.parse(headers) : undefined,
 
 			key,
+			...(auth_type === 'aws_iam' ? { aws_region: awsRegion, aws_service: awsService } : {}),
 			config: {
 				enable: enable,
 				function_name_filter_list: functionNameFilterList,
@@ -436,6 +441,9 @@
 		oauthScope = '';
 		oauthResourceParameter = 'auto';
 
+		awsRegion = 'us-east-1';
+		awsService = 'bedrock';
+
 		enable = true;
 		functionNameFilterList = '';
 		accessGrants = [];
@@ -464,6 +472,9 @@
 			oauthServerUrl = connection.info?.oauth_server_url ?? '';
 			oauthScope = connection.info?.oauth_scope ?? '';
 			oauthResourceParameter = connection.info?.oauth_resource_parameter ?? 'auto';
+
+			awsRegion = (connection as any)?.aws_region ?? 'us-east-1';
+			awsService = (connection as any)?.aws_service ?? 'bedrock';
 
 			enable = connection.config?.enable ?? true;
 			functionNameFilterList = connection.config?.function_name_filter_list ?? '';
@@ -755,9 +766,10 @@
 											{#if !direct}
 												<option value="system_oauth">{$i18n.t('OAuth')}</option>
 												{#if type === 'mcp'}
-													<option value="oauth_2.1">{$i18n.t('OAuth 2.1')}</option>
-													<option value="oauth_2.1_static">{$i18n.t('OAuth 2.1 (Static)')}</option>
-												{/if}
+															<option value="oauth_2.1">{$i18n.t('OAuth 2.1')}</option>
+															<option value="oauth_2.1_static">{$i18n.t('OAuth 2.1 (Static)')}</option>
+															<option value="aws_iam">{$i18n.t('AWS IAM (SigV4)')}</option>
+														{/if}
 											{/if}
 										</select>
 									</div>
@@ -788,27 +800,47 @@
 												{$i18n.t('Uses OAuth 2.1 Dynamic Client Registration')}
 											</div>
 										{:else if auth_type === 'oauth_2.1_static'}
-											<div class="flex flex-col gap-1.5 w-full mt-0.5">
-												<SensitiveInput
-													bind:value={oauthClientId}
-													placeholder={$i18n.t('Client ID')}
-													required={false}
-												/>
-												<SensitiveInput
-													bind:value={oauthClientSecret}
-													placeholder={$i18n.t('Client Secret')}
-													required={false}
-												/>
-												<div class="flex flex-1 items-center">
-													<input
-														class={`w-full text-sm ${inputClass}`}
-														type="text"
-														bind:value={oauthServerUrl}
-														placeholder={$i18n.t('OAuth Server URL')}
-														autocomplete="off"
-													/>
-												</div>
-											</div>
+													<div class="flex flex-col gap-1.5 w-full mt-0.5">
+														<SensitiveInput
+															bind:value={oauthClientId}
+															placeholder={$i18n.t('Client ID')}
+															required={false}
+														/>
+														<SensitiveInput
+															bind:value={oauthClientSecret}
+															placeholder={$i18n.t('Client Secret')}
+															required={false}
+														/>
+														<div class="flex flex-1 items-center">
+															<input
+																class={`w-full text-sm ${inputClass}`}
+																type="text"
+																bind:value={oauthServerUrl}
+																placeholder={$i18n.t('OAuth Server URL')}
+																autocomplete="off"
+															/>
+														</div>
+													</div>
+												{:else if auth_type === 'aws_iam'}
+													<div class="flex flex-col gap-1.5 w-full mt-0.5">
+														<input
+															class={`w-full text-sm ${inputClass}`}
+															type="text"
+															bind:value={awsRegion}
+															placeholder={$i18n.t('AWS Region (e.g. us-east-1)')}
+															autocomplete="off"
+														/>
+														<input
+															class={`w-full text-sm ${inputClass}`}
+															type="text"
+															bind:value={awsService}
+															placeholder={$i18n.t('AWS Service (default: bedrock)')}
+															autocomplete="off"
+														/>
+														<div class={`text-xs self-center text-gray-500`}>
+															{$i18n.t('Uses AWS credential chain: env vars → ~/.aws/credentials → instance role')}
+														</div>
+													</div>
 										{/if}
 									</div>
 								</div>

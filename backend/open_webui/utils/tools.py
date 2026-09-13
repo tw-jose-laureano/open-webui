@@ -109,6 +109,7 @@ from open_webui.utils.headers import (
     normalize_bearer_token,
 )
 from open_webui.utils.json_codec import JSONCodec
+from open_webui.utils.aws_sigv4 import AWSSigV4Auth
 from open_webui.utils.misc import is_string_allowed
 from open_webui.utils.plugin import get_tool_contents_cache, get_tools_cache, load_tool_module_by_id
 from open_webui.utils.terminals import (
@@ -131,14 +132,16 @@ async def build_tool_server_headers(
     server_id: str = '',
     metadata: dict | None = None,
     extra_params: dict | None = None,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, object]:
     """Build auth headers and cookies for a tool server connection.
 
-    Handles bearer, session, system_oauth, and oauth_2.1 auth types plus
-    custom header interpolation and user-info forwarding.
+    Handles bearer, session, system_oauth, oauth_2.1, and aws_iam auth types
+    plus custom header interpolation and user-info forwarding.
     Shared by MCP and OpenAPI paths.
 
-    Returns (headers, cookies).
+    Returns (headers, cookies, auth) where auth is an httpx.Auth instance or
+    None. Non-None auth should be passed to httpx.AsyncClient(auth=...) rather
+    than added to headers.
     """
     extra_params = extra_params or {}
     metadata = metadata or {}
@@ -169,6 +172,21 @@ async def build_tool_server_headers(
                 headers.update(bearer_auth_header(oauth_token.get('access_token', '')))
         except Exception as e:
             log.error(f'Error getting OAuth token: {e}')
+    elif auth_type == 'aws_iam':
+        aws_region = connection.get('aws_region', 'us-east-1')
+        aws_service = connection.get('aws_service', 'bedrock')
+        # Custom headers and user-info headers are not meaningful for SigV4 connections,
+        # but we still run those blocks below for consistency, then return early with auth.
+        connection_headers = connection.get('headers', None)
+        if connection_headers and isinstance(connection_headers, dict):
+            headers.update(await get_custom_headers(connection_headers, user, metadata))
+        if ENABLE_FORWARD_USER_INFO_HEADERS and user:
+            headers = include_user_info_headers(headers, user)
+            if metadata.get('chat_id'):
+                headers[FORWARD_SESSION_INFO_HEADER_CHAT_ID] = metadata['chat_id']
+            if metadata.get('message_id'):
+                headers[FORWARD_SESSION_INFO_HEADER_MESSAGE_ID] = metadata['message_id']
+        return headers, cookies, AWSSigV4Auth(region=aws_region, service=aws_service)
 
     # Interpolate template vars in custom connection headers
     connection_headers = connection.get('headers', None)
@@ -183,7 +201,7 @@ async def build_tool_server_headers(
         if metadata.get('message_id'):
             headers[FORWARD_SESSION_INFO_HEADER_MESSAGE_ID] = metadata['message_id']
 
-    return headers, cookies
+    return headers, cookies, None
 
 
 # Let no function be called without need, and let what
@@ -428,7 +446,7 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
                                 continue
 
                         metadata = extra_params.get('__metadata__', {})
-                        headers, cookies = await build_tool_server_headers(
+                        headers, cookies, _ = await build_tool_server_headers(
                             tool_server_connection,
                             request,
                             user,

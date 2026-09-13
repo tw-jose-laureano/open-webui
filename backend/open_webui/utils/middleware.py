@@ -2336,7 +2336,7 @@ async def connect_mcp_server(
         log.warning(f'Access denied to MCP server {server_id} for user {user.id}')
         return None
 
-    headers, _ = await build_tool_server_headers(
+    headers, _, mcp_auth = await build_tool_server_headers(
         mcp_server_connection,
         request,
         user,
@@ -2349,6 +2349,7 @@ async def connect_mcp_server(
     await client.connect(
         url=mcp_server_connection.get('url', ''),
         headers=headers if headers else None,
+        auth=mcp_auth,
     )
 
     function_name_filter_list = mcp_server_connection.get('config', {}).get('function_name_filter_list', '')

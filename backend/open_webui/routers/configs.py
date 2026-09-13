@@ -13,6 +13,7 @@ from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.aws_sigv4 import AWSSigV4Auth
 from open_webui.utils.headers import bearer_auth_header, get_custom_headers
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.oauth import (
@@ -614,13 +615,19 @@ async def verify_tool_servers_config(request: Request, form_data: ToolServerConn
                     if token:
                         headers = {'Authorization': f'Bearer {token}'}
 
+                    mcp_connect_auth = None
+                    if form_data.auth_type == 'aws_iam':
+                        aws_region = (form_data.model_extra or {}).get('aws_region', 'us-east-1')
+                        aws_service = (form_data.model_extra or {}).get('aws_service', 'bedrock')
+                        mcp_connect_auth = AWSSigV4Auth(region=aws_region, service=aws_service)
+
                     if form_data.headers and isinstance(form_data.headers, dict):
                         if headers is None:
                             headers = {}
                         custom_headers = await get_custom_headers(form_data.headers, user)
                         headers.update(custom_headers)
 
-                    await client.connect(form_data.url, headers=headers)
+                    await client.connect(form_data.url, headers=headers, auth=mcp_connect_auth)
                     specs = await client.list_tool_specs()
                     return {
                         'status': True,
