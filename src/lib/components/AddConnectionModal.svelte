@@ -44,10 +44,16 @@
 			provider === '' &&
 			!/\/openai\/v1(\/|$)/.test(url));
 
+	// Auto-set aws_iam auth when bedrock provider is selected
+	$: if (provider === 'bedrock' && auth_type === 'bearer') {
+		auth_type = 'aws_iam';
+	}
+
 	let prefixId = '';
 	let enable = true;
 	let apiVersion = '';
 	let apiType = ''; // '' = chat completions (default), 'responses' = Responses API
+	let bedrockRegion = '';
 
 	let headers = '';
 	let passthroughParams = '';
@@ -205,6 +211,11 @@
 		// remove trailing slash from url
 		url = url.replace(/\/$/, '');
 
+		// Bedrock doesn't use a URL — default to 'bedrock' as a stable config key
+		if (provider === 'bedrock' && !url.trim()) {
+			url = 'bedrock';
+		}
+
 		const connection = {
 			url,
 			key,
@@ -217,11 +228,12 @@
 				auth_type,
 				headers: headers ? JSON.parse(headers) : undefined,
 				passthrough_params: parsePassthroughParams(passthroughParams),
-				...(provider ? { provider } : {}),
-				...(!ollama && azure ? { azure: true } : {}),
-				...(azure ? { api_version: apiVersion } : {}),
-				...(apiType ? { api_type: apiType } : {})
-			}
+					...(provider ? { provider } : {}),
+					...(!ollama && azure ? { azure: true } : {}),
+					...(azure ? { api_version: apiVersion } : {}),
+					...(apiType ? { api_type: apiType } : {}),
+					...(provider === 'bedrock' && bedrockRegion ? { bedrock_region: bedrockRegion } : {})
+				}
 		};
 
 		await onSubmit(connection);
@@ -264,6 +276,7 @@
 				provider = connection.config?.provider ?? (connection.config?.azure ? 'azure' : '');
 				apiVersion = connection.config?.api_version ?? '';
 				apiType = connection.config?.api_type ?? '';
+				bedrockRegion = connection.config?.bedrock_region ?? '';
 			}
 		}
 	};
@@ -420,9 +433,10 @@
 											{#if !ollama}
 												<option value="session">{$i18n.t('Session')}</option>
 												{#if !direct}
-													<option value="system_oauth">{$i18n.t('OAuth')}</option>
-													<option value="microsoft_entra_id">{$i18n.t('Entra ID')}</option>
-												{/if}
+														<option value="system_oauth">{$i18n.t('OAuth')}</option>
+														<option value="microsoft_entra_id">{$i18n.t('Entra ID')}</option>
+														<option value="aws_iam">{$i18n.t('AWS IAM')}</option>
+													{/if}
 											{/if}
 										</select>
 									</div>
@@ -449,6 +463,10 @@
 										{:else if ['azure_ad', 'microsoft_entra_id'].includes(auth_type)}
 											<div class={`text-xs self-center translate-y-[1px] text-gray-500`}>
 												{$i18n.t('Uses DefaultAzureCredential to authenticate')}
+											</div>
+										{:else if auth_type === 'aws_iam'}
+											<div class={`text-xs self-center translate-y-[1px] text-gray-500`}>
+												{$i18n.t('Uses AWS credential chain (instance role, env vars, profile)')}
 											</div>
 										{/if}
 									</div>
@@ -606,6 +624,7 @@
 										>
 											<option value="">{$i18n.t('Default')}</option>
 											<option value="azure">{$i18n.t('Azure OpenAI')}</option>
+											<option value="bedrock">{$i18n.t('AWS Bedrock')}</option>
 											<option value="llama.cpp">{$i18n.t('llama.cpp')}</option>
 											<option value="lmstudio">{$i18n.t('LM Studio')}</option>
 											<option value="litellm">{$i18n.t('LiteLLM')}</option>
@@ -635,10 +654,31 @@
 											/>
 										</div>
 									</div>
-								</div>
-							{/if}
+									</div>
+									{/if}
 
-							<div class="flex flex-col w-full mt-2">
+									{#if provider === 'bedrock'}
+										<div class="flex gap-2 mt-2">
+											<div class="flex flex-col w-full">
+												<label
+													for="bedrock-region-input"
+													class={`mb-0.5 text-xs text-gray-500`}
+												>{$i18n.t('AWS Region')}</label>
+												<div class="flex-1">
+													<input
+														id="bedrock-region-input"
+														class={`w-full text-sm ${inputClass}`}
+														type="text"
+														bind:value={bedrockRegion}
+														placeholder={$i18n.t('us-east-1')}
+														autocomplete="off"
+													/>
+												</div>
+											</div>
+										</div>
+									{/if}
+
+									<div class="flex flex-col w-full mt-2">
 								<div class="mb-1 flex justify-between">
 									<div
 										class={`mb-0.5 text-xs text-gray-500

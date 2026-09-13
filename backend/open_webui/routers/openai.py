@@ -41,6 +41,14 @@ from open_webui.models.models import Models
 from open_webui.models.users import UserModel
 from open_webui.utils.access_control import check_model_access, has_connection_access, has_permission
 from open_webui.utils.anthropic import ANTHROPIC_VERSION, get_anthropic_models, is_anthropic_url
+from open_webui.utils.bedrock import (
+    build_converse_kwargs as bedrock_build_converse_kwargs,
+    call_converse_stream as bedrock_call_converse_stream,
+    discover_bedrock_models as bedrock_discover_models,
+    normalize_converse_response as bedrock_normalize_response,
+    resolve_aws_region as bedrock_resolve_region,
+    get_bedrock_runtime_client as bedrock_get_runtime_client,
+)
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import get_custom_headers, include_user_info_headers
 from open_webui.utils.json_codec import JSONCodec
@@ -209,6 +217,10 @@ async def get_headers_and_cookies(
 
     elif auth_type in ('azure_ad', 'microsoft_entra_id'):
         token = get_microsoft_entra_id_access_token()
+    elif auth_type == 'aws_iam':
+        # AWS Bedrock: credentials resolved by boto3's default chain at call time.
+        # No Authorization header is needed — boto3 signs each request via SigV4.
+        token = None
 
     if token:
         headers['Authorization'] = f'Bearer {token}'
@@ -700,7 +712,35 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             model_ids = api_config.get('model_ids', [])
 
             if enable:
-                if len(model_ids) == 0:
+                # --- AWS Bedrock: discover models via control-plane API ---
+                if api_config.get('provider') == 'bedrock':
+                    region = api_config.get('bedrock_region') or bedrock_resolve_region()
+                    try:
+                        bedrock_model_list = bedrock_discover_models(region)
+                    except Exception as exc:
+                        log.warning('bedrock: model discovery failed for region %s: %s', region, exc)
+                        bedrock_model_list = []
+                    prefix_id = api_config.get('prefix_id', None)
+                    tags = api_config.get('tags', [])
+                    bedrock_data = []
+                    for bm in bedrock_model_list:
+                        mid = f'{prefix_id}.{bm["id"]}' if prefix_id else bm['id']
+                        entry = {
+                            'id': mid,
+                            'name': bm.get('name', bm['id']),
+                            'object': 'model',
+                            'owned_by': bm.get('provider', 'bedrock'),
+                            'urlIdx': idx,
+                            'connection_type': api_config.get('connection_type', 'external'),
+                        }
+                        if tags:
+                            entry['tags'] = tags
+                        bedrock_data.append(entry)
+                    request_tasks.append(
+                        asyncio.ensure_future(asyncio.sleep(0, {'object': 'list', 'data': bedrock_data}))
+                    )
+                # --- end AWS Bedrock ---
+                elif len(model_ids) == 0:
                     request_tasks.append(get_models_request(request, url, api_keys[idx], user=user, config=api_config))
                 else:
                     model_list = {
@@ -1079,6 +1119,19 @@ async def verify_connection(
     ) as session:
         try:
             headers, cookies = await get_headers_and_cookies(request, url, key, api_config, user=user)
+
+            # --- AWS Bedrock verification ---
+            if api_config.get('provider') == 'bedrock':
+                region = api_config.get('bedrock_region') or bedrock_resolve_region()
+                try:
+                    models = bedrock_discover_models(region)
+                    return {
+                        'status': True,
+                        'details': f'Connected to AWS Bedrock ({region}). Found {len(models)} model(s).',
+                    }
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail=f'Bedrock connection failed: {exc}')
+            # --- end AWS Bedrock ---
 
             if api_config.get('azure') or api_config.get('provider') == 'azure':
                 # Only set api-key header if not using Azure Entra ID authentication
@@ -1565,6 +1618,37 @@ async def generate_chat_completion(
     headers, cookies = await get_headers_and_cookies(request, url, key, api_config, metadata, user=user)
 
     is_responses = api_config.get('api_type') == 'responses'
+
+    # --- AWS Bedrock: route directly to boto3, bypassing aiohttp entirely ---
+    if api_config.get('provider') == 'bedrock':
+        region = api_config.get('bedrock_region') or bedrock_resolve_region()
+        bedrock_model = payload.get('model', '')
+        bedrock_messages = payload.get('messages', [])
+        bedrock_tools = payload.get('tools', None)
+        bedrock_max_tokens = payload.get('max_tokens', 4096)
+        bedrock_temperature = payload.get('temperature', None)
+
+        if payload.get('stream', False):
+            return StreamingResponse(
+                bedrock_call_converse_stream(
+                    region=region,
+                    model=bedrock_model,
+                    messages=bedrock_messages,
+                    tools=bedrock_tools,
+                    max_tokens=bedrock_max_tokens,
+                    temperature=bedrock_temperature,
+                ),
+                media_type='text/event-stream',
+            )
+        else:
+            loop = asyncio.get_event_loop()
+            bedrock_client = bedrock_get_runtime_client(region)
+            bedrock_kwargs = bedrock_build_converse_kwargs(
+                bedrock_model, bedrock_messages, bedrock_tools, bedrock_max_tokens, bedrock_temperature
+            )
+            raw = await loop.run_in_executor(None, lambda: bedrock_client.converse(**bedrock_kwargs))
+            return JSONResponse(content=bedrock_normalize_response(raw))
+    # --- end AWS Bedrock ---
 
     if api_config.get('azure') or api_config.get('provider') == 'azure':
         # Only set api-key header if not using Azure Entra ID authentication
